@@ -77,7 +77,11 @@ typedef enum ofp_ipsec_cipher_alg_t {
  * IPSEC key structure
  */
 typedef struct ofp_ipsec_key_t {
-	/** Key length in bytes */
+	/** Key length in bytes
+	 *
+	 * @note With AES_GCM the key must be 4 bytes longer than the AES key.
+	 * The last 4 bytes of the key are used as the salt value.
+	 */
 	uint16_t key_len;
 	/** Key data */
 	uint8_t key_data[OFP_IPSEC_MAX_KEY_SZ];
@@ -113,7 +117,12 @@ typedef enum ofp_ipsec_auth_alg_t {
 	 *
 	 *  @note Must be paired with cipher OFP_IPSEC_CIPHER_ALG_AES_GCM
 	 */
-	OFP_IPSEC_AUTH_ALG_AES_GCM = ODP_AUTH_ALG_AES_GCM
+	OFP_IPSEC_AUTH_ALG_AES_GCM = ODP_AUTH_ALG_AES_GCM,
+	/** AES Galois Message Authentication Code
+	 *
+	 *  @note Must be paired with cipher OFP_IPSEC_CIPHER_ALG_NULL
+	 */
+	OFP_IPSEC_AUTH_ALG_AES_GMAC = ODP_AUTH_ALG_AES_GMAC
 } ofp_ipsec_auth_alg_t;
 
 /**
@@ -641,5 +650,40 @@ ofp_ipsec_sp_handle ofp_ipsec_sp_next(ofp_ipsec_sp_handle sp);
  * @param status  Pointer to caller allocated info structure to be filled.
  */
 void ofp_ipsec_sp_get_info(ofp_ipsec_sp_handle sp, ofp_ipsec_sp_info_t *info);
+
+/***********************************************************************
+ * OFP IPsec packet processing API
+ **********************************************************************/
+
+/**
+ * Handle an IPsec packet event.
+ *
+ * In asynchronous and inline operation modes the result of an ODP IPsec
+ * operation is delivered as an event through a queue. An OFP application
+ * must provide these events to OFP using this function unless it uses
+ * the default event dispatcher. The provided event will be freed.
+ *
+ * This function must be called with events that have type ODP_EVENT_PACKET
+ * and subtype ODP_EVENT_PACKET_IPSEC.
+ *
+ * @param ev       Event handle
+ * @param queue    Handle of the queue through which the event was received
+ */
+void ofp_ipsec_packet_event(odp_event_t ev, odp_queue_t queue);
+
+/**
+ * Handle an IPsec packet event.
+ *
+ * In asynchronous and inline operation modes the result of an ODP IPsec
+ * operation may result in a status event. An OFP application must provide
+ * these events to OFP using this function unless it uses the default event
+ * dispatcher. The provided event will be freed.
+ *
+ * This function must be called with events of type ODP_EVENT_IPSEC_STATUS.
+ *
+ * @param ev       Event handle
+ * @param queue    Handle of the queue through which the event was received
+ */
+void ofp_ipsec_status_event(odp_event_t ev, odp_queue_t queue);
 
 #endif /* OFP_IPSEC_H */
