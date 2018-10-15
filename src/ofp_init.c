@@ -40,6 +40,7 @@
 #include "ofpi_igmp_var.h"
 #include "ofpi_vxlan.h"
 #include "ofpi_uma.h"
+#include "ofpi_ipsec.h"
 
 #include "ofpi_log.h"
 #include "ofpi_debug.h"
@@ -49,6 +50,7 @@ static __thread struct ofp_global_config_mem *shm;
 __thread ofp_global_param_t *global_param = NULL;
 
 static void drain_scheduler(void);
+static void drain_scheduler_for_global_term(void);
 static void cleanup_pkt_queue(odp_queue_t pkt_queue);
 
 static int ofp_global_config_alloc_shared_memory(void)
@@ -283,6 +285,8 @@ void ofp_init_global_param_from_file(ofp_global_param_t *params, const char *fil
 	params->chksum_offload.ipv4_tx_ena = OFP_CHKSUM_OFFLOAD_IPV4_TX;
 	params->chksum_offload.udp_tx_ena = OFP_CHKSUM_OFFLOAD_UDP_TX;
 	params->chksum_offload.tcp_tx_ena = OFP_CHKSUM_OFFLOAD_TCP_TX;
+	ofp_ipsec_param_init(&params->ipsec);
+
 	read_conf_file(params, filename);
 }
 
@@ -316,6 +320,7 @@ static void ofp_init_prepare(void)
 	ofp_socket_init_prepare();
 	ofp_tcp_var_init_prepare();
 	ofp_ip_init_prepare();
+	ofp_ipsec_init_prepare(&global_param->ipsec);
 }
 
 static int ofp_init_pre_global(ofp_global_param_t *params)
@@ -391,6 +396,7 @@ static int ofp_init_pre_global(ofp_global_param_t *params)
 	HANDLE_ERROR(ofp_tcp_var_init_global());
 	HANDLE_ERROR(ofp_inet_init());
 	HANDLE_ERROR(ofp_ip_init_global());
+	HANDLE_ERROR(ofp_ipsec_init_global(&params->ipsec));
 
 	return 0;
 }
@@ -478,6 +484,7 @@ int ofp_init_local(void)
 	HANDLE_ERROR(ofp_tcp_var_lookup_shared_memory());
 	HANDLE_ERROR(ofp_send_pkt_out_init_local());
 	HANDLE_ERROR(ofp_ip_init_local());
+	HANDLE_ERROR(ofp_ipsec_init_local());
 
 	return 0;
 }
@@ -633,6 +640,9 @@ int ofp_term_post_global(const char *pool_name)
 	/* Cleanup timers - phase 1*/
 	CHECK_ERROR(ofp_timer_stop_global(), rc);
 
+	/* Stop IPsec. This may generate events that need to be handled. */
+	CHECK_ERROR(ofp_ipsec_stop_global(), rc);
+
 	/*
 	 * ofp_term_local() has paused scheduling for this thread. Resume
 	 * scheduling temporarily for draining events created during global
@@ -641,7 +651,7 @@ int ofp_term_post_global(const char *pool_name)
 	odp_schedule_resume();
 
 	/* Cleanup pending events */
-	drain_scheduler();
+	drain_scheduler_for_global_term();
 
 	/*
 	 * Now pause scheduling permanently and drain events once more
@@ -652,6 +662,9 @@ int ofp_term_post_global(const char *pool_name)
 
 	/* Cleanup timers - phase 2*/
 	CHECK_ERROR(ofp_timer_term_global(), rc);
+
+	/* Cleanup IPsec */
+	CHECK_ERROR(ofp_ipsec_term_global(), rc);
 
 	/* Cleanup packet pool */
 	pool = odp_pool_lookup(pool_name);
@@ -700,8 +713,29 @@ static void drain_scheduler(void)
 				ofp_timer_evt_cleanup(evt);
 				break;
 			}
+		case ODP_EVENT_IPSEC_STATUS:
+			ofp_ipsec_status_event(evt, from);
+			break;
 		default:
 			odp_event_free(evt);
+		}
+	}
+}
+
+static void drain_scheduler_for_global_term(void)
+{
+	odp_time_t start, now;
+
+	start = odp_time_local();
+
+	while (1) {
+		drain_scheduler();
+		if (ofp_ipsec_term_global_ok())
+			break;
+		now = odp_time_local();
+		if (odp_time_diff_ns(now, start) > NS_PER_SEC) {
+			OFP_ERR("Giving up waiting ODP IPsec SA destruction");
+			break;
 		}
 	}
 }
